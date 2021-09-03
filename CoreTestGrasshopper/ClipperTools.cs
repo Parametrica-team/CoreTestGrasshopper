@@ -19,38 +19,65 @@ namespace UrbanbotCore
         {
         }
 
-        public static List<Curve> Offset(Curve crv1, double offset, double tolerance = 1)
+        public static List<Curve> Offset(Curve crv1, double offset, JoinType joinType = JoinType.jtMiter, EndType endType = EndType.etOpenButt, double tolerance = 1)
         {
             if (crv1 == null) return null;
 
             var clipper = new ClipperOffset();
             var pts = Util.GetCurveCorners(crv1);
 
-            // если замкнутая, нужно добавить первую точку в конец
+            // если замкнутая, то нужно использовать etcClosedPolygon
+            // так сделает только одну кривую
             if (crv1.IsClosed)
-                pts.Add(pts[0]);
+                endType = EndType.etClosedPolygon;
 
             Path polygon = pts.Select(pt => Point3dToIntPoint(pt, tolerance)).ToList();
 
-            clipper.AddPath(polygon, JoinType.jtMiter, EndType.etClosedLine);
+            clipper.AddPath(polygon, joinType, endType);
 
-            Paths solution = new Paths();
+            PolyTree solution = new PolyTree();
             clipper.Execute(ref solution, offset);
 
-            var offsetedPts = solution.Select(of => of.Select(ipt => IntPointToPoint3d(ipt, tolerance)).ToList()).ToList();
+            var offsetedPolylines = solution.Childs
+                .Select(ch => ch.Contour
+                    .Select(ipt => IntPointToPoint3d(ipt, tolerance)))
+                .Select(opts => new Polyline(opts))
+                .ToList();
 
-            // если замкнутая, нужно добавить первую точку в конец
-            if (crv1.IsClosed)
+            var offsettedCrvs = new List<Curve>();
+
+            // если не замкнутая, нужно разомкнуть
+            if (!crv1.IsClosed)
             {
-                foreach (var ptGroup in offsetedPts)
+                foreach (var poly in offsetedPolylines)
                 {
-                    ptGroup.Add(ptGroup[0]);
+                    for (int i = 0; i < poly.Count; i++)
+                    {
+                        // находим центр отрезка
+                        // если центр отрезка не совпадает с началом или концом кривой, то добавляем следующую точку к полилинии
+                        // в противном случае добавляем точку к новой полилинии
+                        
+                        // первая точка может быть где-то в середине кривой, тогда в итоге будет 3 полилинии
+                    }
+
+                    // из двух полилиний нужно выбрать одну, например правее от исходной кривой
                 }
+
+                // временно, чтобы посмотреть что происходит
+                offsettedCrvs = offsetedPolylines.Select(p => p.ToNurbsCurve() as Curve).ToList();
+            }
+            else
+            {
+                foreach (var poly in offsetedPolylines)
+                {
+                    poly.Add(poly[0]);
+                }
+                offsettedCrvs = offsetedPolylines.Select(p => p.ToNurbsCurve() as Curve).ToList();
             }
 
-            var polylines = offsetedPts.Select(opts => new Polyline(opts).ToNurbsCurve() as Curve).ToList();
+            //var polylines = offsetedPts.Select(opts => new Polyline(opts).ToNurbsCurve() as Curve).ToList();
 
-            return polylines;
+            return offsettedCrvs;
         }
 
         private static Point3d IntPointToPoint3d(IntPoint ipt, double tolerance)

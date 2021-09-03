@@ -1,4 +1,5 @@
-﻿using Grasshopper.Kernel;
+﻿using ClipperLib;
+using Grasshopper.Kernel;
 using Rhino.Geometry;
 using System;
 using System.Collections.Generic;
@@ -57,7 +58,7 @@ namespace GrassPlugin
 
 
             var pt = new CoreTestGrasshopper.Class1();
-            var off = UrbanbotCore.ClipperTools.Offset(crv, offset);
+            var off = UrbanbotCore.ClipperTools.Offset(crv, offset, JoinType.jtMiter, EndType.etOpenButt);
             DA.SetDataList(0, off);
         }
 

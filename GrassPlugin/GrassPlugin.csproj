@@ -82,7 +82,9 @@
   -->
   <PropertyGroup>
     <PostBuildEvent>Copy "$(TargetPath)" "$(TargetDir)$(ProjectName).gha"
-Erase "$(TargetPath)"</PostBuildEvent>
+Erase "$(TargetPath)"
+
+xcopy $(TargetDir) %25appdata%25\Grasshopper\Libraries\CoreTest /I /Y /E</PostBuildEvent>
   </PropertyGroup>
   <PropertyGroup>
     <FallbackCulture>en-US</FallbackCulture>

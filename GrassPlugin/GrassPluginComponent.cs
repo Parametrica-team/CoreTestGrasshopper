@@ -31,6 +31,8 @@ namespace GrassPlugin
         /// </summary>
         protected override void RegisterInputParams(GH_Component.GH_InputParamManager pManager)
         {
+            pManager.AddCurveParameter("Curve", "C", "Curve", GH_ParamAccess.item);
+            pManager.AddIntegerParameter("Offset", "O", "Offset", GH_ParamAccess.item);
         }
 
         /// <summary>
@@ -38,7 +40,7 @@ namespace GrassPlugin
         /// </summary>
         protected override void RegisterOutputParams(GH_Component.GH_OutputParamManager pManager)
         {
-            pManager.AddPointParameter("output", "output", "output", GH_ParamAccess.item);
+            pManager.AddCurveParameter("output", "output", "output", GH_ParamAccess.list);
         }
 
         /// <summary>
@@ -48,8 +50,15 @@ namespace GrassPlugin
         /// to store data in output parameters.</param>
         protected override void SolveInstance(IGH_DataAccess DA)
         {
+            Curve crv = null;
+            int offset = 0;
+            DA.GetData(0, ref crv);
+            DA.GetData(1, ref offset);
+
+
             var pt = new CoreTestGrasshopper.Class1();
-            DA.SetData(0, pt.Point);
+            var off = UrbanbotCore.ClipperTools.Offset(crv, offset);
+            DA.SetDataList(0, off);
         }
 
         /// <summary>

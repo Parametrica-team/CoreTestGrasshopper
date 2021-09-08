@@ -1,9 +1,6 @@
-﻿
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using ClipperLib;
 using Rhino.Geometry;
 
@@ -14,57 +11,113 @@ namespace UrbanbotCore
 
     public class ClipperTools
     {
-        
+
         public ClipperTools()
         {
         }
 
-        public static List<Curve> Offset(Curve crv1, double offset, JoinType joinType = JoinType.jtMiter, EndType endType = EndType.etOpenButt, double tolerance = 1)
+        public static List<Curve> Offset(Curve crv1, double offset, JoinType joinType = JoinType.jtMiter, EndType endType = EndType.etOpenButt, double clipperTolerance = 1)
         {
             if (crv1 == null) return null;
 
+            var offsettedCrvs = new List<Curve>();
+
+            // вернёт исходую кривую, если ничего не нужно офсетить
+            if (offset == 0)
+            {
+                offsettedCrvs.Add(crv1);
+                return offsettedCrvs;
+            }
+
             var clipper = new ClipperOffset();
             var pts = Util.GetCurveCorners(crv1);
+
+            // Каждая точка вычислится с точностью n, но любые арифметические операции увеличат погрешность
+            // интпоинты тоже, скорее всего влияют на точность
+            var comparedTolerance = clipperTolerance * 1.5;
 
             // если замкнутая, то нужно использовать etcClosedPolygon
             // так сделает только одну кривую
             if (crv1.IsClosed)
                 endType = EndType.etClosedPolygon;
 
-            Path polygon = pts.Select(pt => Point3dToIntPoint(pt, tolerance)).ToList();
+            Path polygon = pts.Select(pt => Point3dToIntPoint(pt, clipperTolerance)).ToList();
 
             clipper.AddPath(polygon, joinType, endType);
 
             PolyTree solution = new PolyTree();
-            clipper.Execute(ref solution, offset);
+            clipper.Execute(ref solution, Math.Abs(offset));
 
             var offsetedPolylines = solution.Childs
                 .Select(ch => ch.Contour
-                    .Select(ipt => IntPointToPoint3d(ipt, tolerance)))
+                    .Select(ipt => IntPointToPoint3d(ipt, clipperTolerance)))
                 .Select(opts => new Polyline(opts))
                 .ToList();
-
-            var offsettedCrvs = new List<Curve>();
 
             // если не замкнутая, нужно разомкнуть
             if (!crv1.IsClosed)
             {
                 foreach (var poly in offsetedPolylines)
                 {
+                    var polylines = new List<List<Point3d>>();
+                    var currentPolyline = new List<Point3d>();
+
                     for (int i = 0; i < poly.Count; i++)
                     {
+                        currentPolyline.Add(poly[i]);
+
                         // находим центр отрезка
-                        // если центр отрезка не совпадает с началом или концом кривой, то добавляем следующую точку к полилинии
-                        // в противном случае добавляем точку к новой полилинии
-                        
-                        // первая точка может быть где-то в середине кривой, тогда в итоге будет 3 полилинии
+                        // позволяет в конце посмотреть последний и первый элемент
+                        var nextPtIndex = (i + 1) % poly.Count;
+                        var centerPt = (poly[i] + poly[nextPtIndex]) / 2;
+
+                        var distanceToStart = centerPt.DistanceTo(crv1.PointAtStart);
+                        var distanceToEnd = centerPt.DistanceTo(crv1.PointAtEnd);
+
+                        // если центр отрезка совпадает с началом или концом кривой, то создаем новую currentPolyline
+                        if (distanceToStart < comparedTolerance || distanceToEnd < comparedTolerance)
+                        {
+                            polylines.Add(currentPolyline);
+                            currentPolyline = new List<Point3d>();
+                        }
                     }
 
-                    // из двух полилиний нужно выбрать одну, например правее от исходной кривой
-                }
+                    // добавляем оставшиеся точки
+                    if (currentPolyline.Any())
+                        polylines.Add(currentPolyline);
 
-                // временно, чтобы посмотреть что происходит
-                offsettedCrvs = offsetedPolylines.Select(p => p.ToNurbsCurve() as Curve).ToList();
+                    // если 3 полилинии, то разрыв был где-то посередине и нужно соединить первую и третью
+                    if (polylines.Count > 2)
+                    {
+                        polylines[2].AddRange(polylines[0]);
+                        polylines.RemoveAt(0);
+                    }
+
+                    // отсортировать направление кривых
+                    polylines[0] = SortPolyline(polylines[0], pts, offset, comparedTolerance);
+                    polylines[1] = SortPolyline(polylines[1], pts, offset, comparedTolerance);
+
+                    // из двух полилиний нужно выбрать одну, например правее от исходной кривой
+                    var originalVec = pts[1] - pts[0];
+                    var testVec = polylines[0][0] - pts[0];
+                    var angle = Vector3d.VectorAngle(originalVec, testVec, Plane.WorldXY);
+                    if (angle < Math.PI)
+                    {
+                        polylines.Reverse();
+                    }
+
+                    // Теперь справа polylines[0], а слева polylines[1]
+                    if (offset < 0)
+                    {
+                        // офсет отрицательный, берем левую
+                        offsettedCrvs.Add(new Polyline(polylines[1]).ToPolylineCurve());
+                    }
+                    else
+                    {
+                        // офсет положительный, берем правую
+                        offsettedCrvs.Add(new Polyline(polylines[0]).ToPolylineCurve());
+                    }
+                }
             }
             else
             {
@@ -75,9 +128,26 @@ namespace UrbanbotCore
                 offsettedCrvs = offsetedPolylines.Select(p => p.ToNurbsCurve() as Curve).ToList();
             }
 
-            //var polylines = offsetedPts.Select(opts => new Polyline(opts).ToNurbsCurve() as Curve).ToList();
+            // закомментить для теста
+            //offsettedCrvs = offsetedPolylines.Select(opts => new Polyline(opts).ToNurbsCurve() as Curve).ToList();
 
             return offsettedCrvs;
+        }
+
+        private static List<Point3d> SortPolyline(List<Point3d> targetPts, List<Point3d> sourcePts, double offset, double comparedTolerance)
+        {
+            // сравнение по точке закрывает случаи, при которых кривая вообще корректно отофсетилась
+            // иные сравнения имеют смысл, если нужно флипать вообще любые кривые.
+            var lengthFromStart = sourcePts[0].DistanceTo(targetPts[0]);
+
+            var difference = lengthFromStart - Math.Abs(offset);
+
+            if (difference > comparedTolerance)
+            {
+                targetPts.Reverse();
+            }
+
+            return targetPts;
         }
 
         private static Point3d IntPointToPoint3d(IntPoint ipt, double tolerance)

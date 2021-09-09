@@ -16,21 +16,21 @@ namespace UrbanbotCore
         {
         }
 
-        public static List<Curve> Offset(Curve crv1, double offset, JoinType joinType = JoinType.jtMiter, EndType endType = EndType.etOpenButt, double clipperTolerance = 1)
+        public static List<Curve> Offset(Curve inputCrv, double offset, JoinType joinType = JoinType.jtMiter, EndType endType = EndType.etOpenButt, double clipperTolerance = 1)
         {
-            if (crv1 == null) return null;
+            if (inputCrv == null) return null;
 
             var offsettedCrvs = new List<Curve>();
 
             // вернёт исходую кривую, если ничего не нужно офсетить
             if (offset == 0)
             {
-                offsettedCrvs.Add(crv1);
+                offsettedCrvs.Add(inputCrv);
                 return offsettedCrvs;
             }
 
             var clipper = new ClipperOffset();
-            var pts = Util.GetCurveCorners(crv1);
+            var cornerPts = Util.GetCurveCorners(inputCrv);
 
             // Каждая точка вычислится с точностью n, но любые арифметические операции увеличат погрешность
             // интпоинты тоже, скорее всего влияют на точность
@@ -38,15 +38,28 @@ namespace UrbanbotCore
 
             // если замкнутая, то нужно использовать etcClosedPolygon
             // так сделает только одну кривую
-            if (crv1.IsClosed)
+            if (inputCrv.IsClosed)
+            {
                 endType = EndType.etClosedPolygon;
+            }
 
-            Path polygon = pts.Select(pt => Point3dToIntPoint(pt, clipperTolerance)).ToList();
+
+            Path polygon = cornerPts.Select(pt => Point3dToIntPoint(pt, clipperTolerance)).ToList();
 
             clipper.AddPath(polygon, joinType, endType);
 
             PolyTree solution = new PolyTree();
-            clipper.Execute(ref solution, Math.Abs(offset));
+
+
+            //у клиппера, видимо, есть внутри проверка на замкнутость и "нутро" кривой - для замкнутой отрицательный оффсет случится корректным, а для незамкнутой просто не построится
+            if (inputCrv.IsClosed)
+            {
+                clipper.Execute(ref solution, offset);
+            }
+            else
+            {
+                clipper.Execute(ref solution, Math.Abs(offset));
+            }
 
             var offsetedPolylines = solution.Childs
                 .Select(ch => ch.Contour
@@ -55,7 +68,7 @@ namespace UrbanbotCore
                 .ToList();
 
             // если не замкнутая, нужно разомкнуть
-            if (!crv1.IsClosed)
+            if (!inputCrv.IsClosed)
             {
                 foreach (var poly in offsetedPolylines)
                 {
@@ -71,8 +84,8 @@ namespace UrbanbotCore
                         var nextPtIndex = (i + 1) % poly.Count;
                         var centerPt = (poly[i] + poly[nextPtIndex]) / 2;
 
-                        var distanceToStart = centerPt.DistanceTo(crv1.PointAtStart);
-                        var distanceToEnd = centerPt.DistanceTo(crv1.PointAtEnd);
+                        var distanceToStart = centerPt.DistanceTo(inputCrv.PointAtStart);
+                        var distanceToEnd = centerPt.DistanceTo(inputCrv.PointAtEnd);
 
                         // если центр отрезка совпадает с началом или концом кривой, то создаем новую currentPolyline
                         if (distanceToStart < comparedTolerance || distanceToEnd < comparedTolerance)
@@ -94,12 +107,12 @@ namespace UrbanbotCore
                     }
 
                     // отсортировать направление кривых
-                    polylines[0] = SortPolyline(polylines[0], pts, offset, comparedTolerance);
-                    polylines[1] = SortPolyline(polylines[1], pts, offset, comparedTolerance);
+                    polylines[0] = SortPolyline(polylines[0], cornerPts, offset, comparedTolerance);
+                    polylines[1] = SortPolyline(polylines[1], cornerPts, offset, comparedTolerance);
 
                     // из двух полилиний нужно выбрать одну, например правее от исходной кривой
-                    var originalVec = pts[1] - pts[0];
-                    var testVec = polylines[0][0] - pts[0];
+                    var originalVec = cornerPts[1] - cornerPts[0];
+                    var testVec = polylines[0][0] - cornerPts[0];
                     var angle = Vector3d.VectorAngle(originalVec, testVec, Plane.WorldXY);
                     if (angle < Math.PI)
                     {

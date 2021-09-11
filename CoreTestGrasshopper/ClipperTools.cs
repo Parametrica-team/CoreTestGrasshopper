@@ -132,19 +132,70 @@ namespace UrbanbotCore
                     }
                 }
             }
-            else
+            else // closed
             {
-                foreach (var poly in offsetedPolylines)
+                for (int i = 0; i < offsetedPolylines.Count; i++)
                 {
-                    poly.Add(poly[0]);
+                    var offsetedPolyline = offsetedPolylines[i];
+
+                    var inputCrvOrientation = inputCrv.ClosedCurveOrientation();
+                    var offsetedPolyOrientation = offsetedPolyline.ToNurbsCurve().ClosedCurveOrientation();
+
+                    if (inputCrvOrientation != offsetedPolyOrientation)
+                    {
+                        offsetedPolyline.Reverse();
+                    }
+
+                    var adjustedPolyline = AdjustPolylineStart(inputCrv, offsetedPolyline);
+
+                    adjustedPolyline.Add(adjustedPolyline[0]);
+
+                    offsettedCrvs.Add(adjustedPolyline.ToNurbsCurve());
                 }
-                offsettedCrvs = offsetedPolylines.Select(p => p.ToNurbsCurve() as Curve).ToList();
             }
 
             // закомментить для теста
             //offsettedCrvs = offsetedPolylines.Select(opts => new Polyline(opts).ToNurbsCurve() as Curve).ToList();
 
             return offsettedCrvs;
+        }
+
+        private static Polyline AdjustPolylineStart(Curve sourceCrv, Polyline targetPolyline)
+        {
+            var rebuildedPts = new List<Point3d>();
+
+            Polyline sourcePolyline;
+
+            sourceCrv.TryGetPolyline(out sourcePolyline);
+
+            var sourceStartTangentVect = sourcePolyline.TangentAt(0);
+
+            while (rebuildedPts.Count != targetPolyline.Count)
+            {
+                for (int i = 0; i < targetPolyline.Count; i++)
+                {
+                    if (rebuildedPts.Count == targetPolyline.Count)
+                    {
+                        break;
+                    }
+
+                    if (rebuildedPts.Count > 0)
+                    {
+                        rebuildedPts.Add(targetPolyline[i]);
+                    }
+                    else
+                    {
+                        var tangentTargetVector = targetPolyline.TangentAt(i);
+
+                        if (tangentTargetVector == sourceStartTangentVect)
+                        {
+                            rebuildedPts.Add(targetPolyline[i]);
+                        }
+                    }
+                }
+            }
+
+            return new Polyline(rebuildedPts);
         }
 
         private static List<Point3d> SortPolyline(List<Point3d> targetPts, List<Point3d> sourcePts, double offset, double comparedTolerance)
@@ -171,6 +222,33 @@ namespace UrbanbotCore
         private static IntPoint Point3dToIntPoint(Point3d point3d, double tolerance = 1)
         {
             return new IntPoint((long)(point3d.X / tolerance), (long)(point3d.Y / tolerance));
+        }
+
+        /// <summary>
+        /// Тестирует точку на попадание внутрь полигона.
+        /// </summary>
+        /// <param name="crv">Замкнутый контур. Если контур содержит кривые участки, они будут преобразованы в прямые.</param>
+        /// <param name="point">Тестируемая точка.</param>
+        /// <param name="tolerance">Точность подсчета. Например, 0.01 - округлять до 2 знаков после запятой.</param>
+        /// <returns>0 - снаружи, 1 - на линии контура, 2 - внутри контура.</returns>
+        public static int IsPointInside(Curve crv, Point3d point, double tolerance = 1)
+        {
+            var points = Util.GetCurveCorners(crv);
+            var path = points.Select(pt => Point3dToIntPoint(pt, tolerance)).ToList();
+            int result = Clipper.PointInPolygon(Point3dToIntPoint(point, tolerance), path);
+
+            // clipper returns 0 if false, +1 if true, -1 if pt ON polygon boundary
+            switch (result)
+            {
+                case -1:
+                    return 1;
+                case 0:
+                    return 0;
+                case 1:
+                    return 2;
+                default:
+                    throw new Exception($"Clipper returned {result}");
+            }
         }
     }
 }

@@ -59,7 +59,7 @@
     <Reference Include="System.Windows.Forms" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="GrassPluginComponent.cs" />
+    <Compile Include="GhPolylineRobooffset.cs" />
     <Compile Include="GrassPluginInfo.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>

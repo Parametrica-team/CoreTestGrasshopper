@@ -16,24 +16,33 @@ namespace UrbanbotCore
         {
         }
 
-        public static List<Curve> Offset(Curve inputCrv, double offset, JoinType joinType = JoinType.jtMiter, EndType endType = EndType.etOpenButt, double clipperTolerance = 1)
+        // вынести толеранс, митер и джоин тайп? в компонент
+        public static List<Curve> Offset(
+            Curve inputCrv,
+            double offsetDistance,
+            JoinType joinType = JoinType.jtMiter,
+            EndType endType = EndType.etOpenButt,
+            double clipperTolerance = 1,
+            double miterLimit = 2)
         {
             if (inputCrv == null) return null;
 
             var offsettedCrvs = new List<Curve>();
 
             // вернёт исходую кривую, если ничего не нужно офсетить
-            if (offset == 0)
+            if (offsetDistance == 0)
             {
                 offsettedCrvs.Add(inputCrv);
                 return offsettedCrvs;
             }
 
-            var clipper = new ClipperOffset();
+            var clipper = new ClipperOffset(miterLimit: miterLimit);
+
             var cornerPts = Util.GetCurveCorners(inputCrv);
 
             // Каждая точка вычислится с точностью n, но любые арифметические операции увеличат погрешность
             // интпоинты тоже, скорее всего влияют на точность
+            // с этим что-то нужно сделать. Наверное, толеранс для сравнения нужно внутренний делать
             var comparedTolerance = clipperTolerance * 1.5;
 
             // если замкнутая, то нужно использовать etcClosedPolygon
@@ -51,14 +60,19 @@ namespace UrbanbotCore
             PolyTree solution = new PolyTree();
 
 
-            //у клиппера, видимо, есть внутри проверка на замкнутость и "нутро" кривой - для замкнутой отрицательный оффсет случится корректным, а для незамкнутой просто не построится
+            // Клиппер, видимо, проверяет кривую на замкнутость и "внутрь" кривой -
+            // для замкнутой отрицательный оффсет случится, а для незамкнутой просто не построится.
+            // Tolerance: Cutoff point. Eg. point {1.245; 9.244351; 19.3214} with precision {0.1} will be cut
+            // off to {1.2; 9.2; 19.3}
+            // С делением офсета на точность как будто есть какой-то глубинный смысл в методе DoOffset в clipper tools.
+            // Полученное значение не просто офсет, а delta. Но я пока не понял. (Немножко понял)
             if (inputCrv.IsClosed)
             {
-                clipper.Execute(ref solution, offset);
+                clipper.Execute(ref solution, offsetDistance / clipperTolerance);
             }
             else
             {
-                clipper.Execute(ref solution, Math.Abs(offset));
+                clipper.Execute(ref solution, Math.Abs(offsetDistance / clipperTolerance));
             }
 
             var offsetedPolylines = solution.Childs
@@ -107,8 +121,8 @@ namespace UrbanbotCore
                     }
 
                     // отсортировать направление кривых
-                    polylines[0] = SortPolyline(polylines[0], cornerPts, offset, comparedTolerance);
-                    polylines[1] = SortPolyline(polylines[1], cornerPts, offset, comparedTolerance);
+                    polylines[0] = SortPolyline(polylines[0], cornerPts, offsetDistance, comparedTolerance);
+                    polylines[1] = SortPolyline(polylines[1], cornerPts, offsetDistance, comparedTolerance);
 
                     // из двух полилиний нужно выбрать одну, например правее от исходной кривой
                     var originalVec = cornerPts[1] - cornerPts[0];
@@ -120,7 +134,7 @@ namespace UrbanbotCore
                     }
 
                     // Теперь справа polylines[0], а слева polylines[1]
-                    if (offset < 0)
+                    if (offsetDistance < 0)
                     {
                         // офсет отрицательный, берем левую
                         offsettedCrvs.Add(new Polyline(polylines[1]).ToPolylineCurve());
@@ -146,7 +160,8 @@ namespace UrbanbotCore
                         offsetedPolyline.Reverse();
                     }
 
-                    var adjustedPolyline = AdjustPolylineStart(inputCrv, offsetedPolyline);
+                    // Тут ещё не замкнутая кривая. Так её проще перестроить.
+                    var adjustedPolyline = AdjustPolylineStart(inputCrv, offsetedPolyline, 1);
 
                     adjustedPolyline.Add(adjustedPolyline[0]);
 
@@ -160,7 +175,7 @@ namespace UrbanbotCore
             return offsettedCrvs;
         }
 
-        private static Polyline AdjustPolylineStart(Curve sourceCrv, Polyline targetPolyline)
+        private static Polyline AdjustPolylineStart(Curve sourceCrv, Polyline targetPolyline, double angleDegTolerance)
         {
             var rebuildedPts = new List<Point3d>();
 
@@ -168,13 +183,21 @@ namespace UrbanbotCore
 
             sourceCrv.TryGetPolyline(out sourcePolyline);
 
-            var sourceStartTangentVect = sourcePolyline.TangentAt(0);
+            // Вектор старта исходной кривой
+            var sourceStartVect = sourcePolyline[1] - sourcePolyline[0];
+            sourceStartVect.Unitize();
 
-            while (rebuildedPts.Count != targetPolyline.Count)
+            var targetPolylinePtCnt = targetPolyline.Count;
+
+            // Из формулы основания равнобедренного треугольника.
+            // Единичные вектора - его равные стороны.
+            var vectorDeviationTolerance = 2 * Math.Cos((180 - angleDegTolerance) / 2);
+
+            while (rebuildedPts.Count != targetPolylinePtCnt)
             {
-                for (int i = 0; i < targetPolyline.Count; i++)
+                for (int i = 0; i < targetPolylinePtCnt; i++)
                 {
-                    if (rebuildedPts.Count == targetPolyline.Count)
+                    if (rebuildedPts.Count == targetPolylinePtCnt)
                     {
                         break;
                     }
@@ -185,9 +208,15 @@ namespace UrbanbotCore
                     }
                     else
                     {
-                        var tangentTargetVector = targetPolyline.TangentAt(i);
+                        // позволяет в конце посмотреть последний и первый элемент
+                        var nextPtInd = (i + 1) % targetPolylinePtCnt;
 
-                        if (tangentTargetVector == sourceStartTangentVect)
+                        var targetVector = targetPolyline[nextPtInd] - targetPolyline[i];
+                        targetVector.Unitize();
+
+                        var vectorDeviation = (sourceStartVect - targetVector).Length;
+
+                        if (vectorDeviation < vectorDeviationTolerance)
                         {
                             rebuildedPts.Add(targetPolyline[i]);
                         }
